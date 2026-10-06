@@ -77,9 +77,9 @@ trusted.
 | Tool | What it does | Data source |
 |---|---|---|
 | `locate_place` | Finds any place and returns its coordinates, country code and a scan radius sized to the place | OpenStreetMap Nominatim, with Open-Meteo as a fallback |
-| `scan_economic_footprint` | Counts what is mapped within the scanned area: **formal** signals (banks, ATMs, offices, supermarkets, chain brands), **informal** signals (open markets, kiosks, small general stores, artisan workshops, mobile-money agents) and public services (clinics, schools), with densities per km² | OpenStreetMap Overpass API |
-| `estimate_formality` | Scores the area from 0 (formal) to 100 (informal), lists the top drivers of the score, and blends the local result with the national rate of vulnerable employment | Overpass + World Bank |
-| `check_map_coverage` | Grades how completely the area is mapped (well mapped, partially mapped, data desert) and flags areas where buildings are traced but businesses are missing | Overpass |
+| `scan_economic_footprint` | Counts what is mapped within the scanned area: **formal** signals (banks, ATMs, offices, supermarkets, chain brands), **informal** signals (open markets, kiosks, small general stores, artisan workshops, mobile-money agents) and public services (clinics, schools), with densities per km² | OpenStreetMap, via the Overpass API or the ohsome API |
+| `estimate_formality` | Scores the area from 0 (formal) to 100 (informal), lists the top drivers of the score, and blends the local result with the national rate of vulnerable employment | OpenStreetMap + World Bank |
+| `check_map_coverage` | Grades how completely the area is mapped (well mapped, partially mapped, data desert) and flags areas where buildings are traced but businesses are missing | OpenStreetMap |
 | `get_country_context` | National benchmarks: GDP per capita, vulnerable employment, self-employment and urbanization, each with its year, plus a warning if the data is old | World Bank API |
 
 Our two original tools, one per team member, are `estimate_formality` and `check_map_coverage`. All data
@@ -154,7 +154,7 @@ crashes.
 | File | Role |
 |---|---|
 | `app.py` | FastAPI server and the agent loop. Gemini (`gemini-3.5-flash-lite` on Vertex AI, via LiteLLM) decides which tools to call; the loop runs them and feeds the results back, for up to 10 rounds, until Gemini answers. Each browser session keeps its own conversation. |
-| `tools.py` | The five tools and the descriptions Gemini reads to decide when to use them. One OpenStreetMap request counts every signal for a place, and the result is cached for an hour so the scoring and coverage tools reuse it. |
+| `tools.py` | The five tools and the descriptions Gemini reads to decide when to use them. The map counts for a place are requested from three public Overpass servers and the ohsome API (HeiGIT) at the same time, and the first good answer is used, which keeps the app working when one service is busy. Results are cached for an hour so the scoring and coverage tools reuse them. |
 | `index.html` | The interface: the map (Leaflet), the reading panel, the chat and the list of tool calls. |
 
 `/chat` keeps the starter's response shape: `response`, `session_id`, and `tool_calls`, where each

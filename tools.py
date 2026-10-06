@@ -37,6 +37,9 @@ OVERPASS_URLS = [
 OVERPASS_TIMEOUT_S = 30  # how long to wait for each server (all are asked at the same time)
 OVERPASS_BUDGET_S = 35  # total time to wait for the first good answer
 FAILURE_MEMORY_S = 120  # remember a failed scan briefly, so the next tools fail fast instead of waiting again
+# The ohsome API (HeiGIT, Heidelberg) is a research service built for counting OpenStreetMap features in an
+# area. It runs on separate infrastructure from Overpass, so it is raced alongside the Overpass servers.
+OHSOME_COUNT_URL = "https://api.ohsome.org/v1/elements/count"
 WORLD_BANK_URL = "https://api.worldbank.org/v2/country/{code}/indicator/{indicator}"
 
 MIN_RADIUS_M, MAX_RADIUS_M, DEFAULT_RADIUS_M = 200, 5000, 1500
@@ -65,6 +68,27 @@ SIGNALS = [
     ("roads", 'way["highway"]', "road and path segments", "coverage"),
 ]
 
+# The same signals written in the ohsome filter language.
+OHSOME_FILTERS = {
+    "banks": "amenity=bank",
+    "atms": "amenity=atm",
+    "offices": "office=*",
+    "big_retail": "shop in (supermarket, mall, department_store)",
+    "branded_shops": "shop=* and brand=*",
+    "marketplaces": "amenity=marketplace",
+    "kiosks": "shop=kiosk",
+    "general_stores": "shop in (general, variety_store)",
+    "artisans": "craft=*",
+    "money_transfer": "amenity=money_transfer",
+    "clinics": "amenity in (clinic, hospital, doctors, pharmacy)",
+    "schools": "amenity in (school, college, university)",
+    "shops": "shop=*",
+    "named_shops": "shop=* and name=*",
+    "amenities": "amenity=*",
+    "buildings": "building=* and type:way",
+    "roads": "highway=* and type:way",
+}
+
 # Weights reflect how much economic activity one mapped feature usually stands for.
 # One open marketplace can hold hundreds of vendors; one bank branch anchors a formal
 # financial district. They are deliberately simple so every number can be explained.
@@ -77,6 +101,7 @@ UNDERCOUNT_GAP = 20  # map score this many points below the national rate trigge
 
 _scan_cache: dict[tuple, tuple[float, dict]] = {}
 _scan_failures: dict[tuple, tuple[float, str]] = {}
+_last_server: dict[tuple, str] = {}  # which server answered each scan, reported in the results
 _country_cache: dict[str, tuple[float, dict]] = {}
 CACHE_SECONDS = 3600
 
@@ -104,10 +129,11 @@ def _clamp_radius(radius_m) -> int:
     return max(MIN_RADIUS_M, min(MAX_RADIUS_M, radius))
 
 
-def _map_data_note(from_cache: bool) -> str:
+def _map_data_note(from_cache: bool, lat: float = 0, lon: float = 0, radius: int = 0) -> str:
+    server = _last_server.get((round(lat, 4), round(lon, 4), radius), "OpenStreetMap")
     if from_cache:
-        return "reused the map counts already fetched for this area (cached), no new request"
-    return "fetched live from OpenStreetMap"
+        return f"reused the map counts already fetched for this area from {server} (cached), no new request"
+    return f"fetched live from {server}"
 
 
 def _haversine_m(lat1, lon1, lat2, lon2) -> float:
@@ -216,6 +242,28 @@ def _ask_overpass(url: str, query: str) -> dict:
     return {name: int(el.get("tags", {}).get("total", 0)) for (name, _, _, _), el in zip(SIGNALS, elements)}
 
 
+def _ohsome_one(name: str, bbox: str) -> tuple[str, int]:
+    resp = requests.get(
+        OHSOME_COUNT_URL, params={"bboxes": bbox, "filter": OHSOME_FILTERS[name]}, headers=HEADERS, timeout=OVERPASS_TIMEOUT_S
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"ohsome HTTP {resp.status_code}")
+    try:
+        return name, int(round(resp.json()["result"][-1]["value"]))
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise RuntimeError("ohsome unreadable response")
+
+
+def _ask_ohsome(south: float, west: float, north: float, east: float) -> dict:
+    """Count every signal with the ohsome API, one small request per signal, run in parallel."""
+    bbox = f"{west:.6f},{south:.6f},{east:.6f},{north:.6f}"  # ohsome wants lon,lat order
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        try:
+            return dict(pool.map(lambda n: _ohsome_one(n, bbox), OHSOME_FILTERS))
+        except requests.RequestException as e:
+            raise RuntimeError(f"ohsome {type(e).__name__}")
+
+
 def _overpass_counts(lat: float, lon: float, radius: int) -> tuple[dict, bool]:
     """Count every signal inside a square around a point, in one Overpass request.
 
@@ -240,8 +288,9 @@ def _overpass_counts(lat: float, lon: float, radius: int) -> tuple[dict, bool]:
     )
 
     problems = []
-    pool = ThreadPoolExecutor(max_workers=len(OVERPASS_URLS))
-    futures = [pool.submit(_ask_overpass, url, query) for url in OVERPASS_URLS]
+    pool = ThreadPoolExecutor(max_workers=len(OVERPASS_URLS) + 1)
+    futures = {pool.submit(_ask_overpass, url, query): url.split("/")[2] for url in OVERPASS_URLS}
+    futures[pool.submit(_ask_ohsome, south, west, north, east)] = "api.ohsome.org"
     try:
         for future in as_completed(futures, timeout=OVERPASS_BUDGET_S):
             try:
@@ -249,7 +298,11 @@ def _overpass_counts(lat: float, lon: float, radius: int) -> tuple[dict, bool]:
             except RuntimeError as e:
                 problems.append(str(e))
                 continue
+            except Exception as e:  # one source breaking in an unexpected way must not stop the others
+                problems.append(f"{futures[future]} {type(e).__name__}")
+                continue
             _scan_cache[key] = (time.time(), counts)
+            _last_server[key] = futures[future]
             return counts, False
     except FuturesTimeout:
         problems.append("too slow")
@@ -257,7 +310,7 @@ def _overpass_counts(lat: float, lon: float, radius: int) -> tuple[dict, bool]:
         pool.shutdown(wait=False, cancel_futures=True)
 
     message = (
-        f"The public OpenStreetMap servers did not answer in time ({', '.join(problems) or 'no response'}). "
+        f"None of the OpenStreetMap data services answered in time ({', '.join(problems) or 'no response'}). "
         f"They are shared and sometimes busy. Do not retry right away: tell the user to try again in a minute "
         f"or two, or to ask about a smaller area (radius_m {max(MIN_RADIUS_M, radius // 2)})."
     )
@@ -292,8 +345,8 @@ def scan_economic_footprint(lat: float, lon: float, radius_m: int = DEFAULT_RADI
         "all_shops": counts["shops"],
         "all_amenities": counts["amenities"],
         "note": "Counts are what volunteers have mapped in OpenStreetMap, a proxy for activity, not a census.",
-        "source": "OpenStreetMap Overpass API",
-        "map_data": _map_data_note(from_cache),
+        "source": "OpenStreetMap data via Overpass or ohsome",
+        "map_data": _map_data_note(from_cache, lat, lon, radius),
     })
 
 
@@ -358,8 +411,8 @@ def estimate_formality(lat: float, lon: float, radius_m: int = DEFAULT_RADIUS_M,
         "radius_m": radius,
         "local_informality_score": local_score,
         "local_band": _band(local_score),
-        "source": "OpenStreetMap Overpass API (map counts) + World Bank API (national rate)",
-        "map_data": _map_data_note(from_cache),
+        "source": "OpenStreetMap data via Overpass or ohsome (map counts) + World Bank API (national rate)",
+        "map_data": _map_data_note(from_cache, lat, lon, radius),
         "weighted_evidence": total,
         "top_drivers": drivers,
         "method": (
@@ -506,8 +559,8 @@ def check_map_coverage(lat: float, lon: float, radius_m: int = DEFAULT_RADIUS_M)
         },
         "findings": findings or ["No major gaps detected."],
         "advice": advice,
-        "source": "OpenStreetMap Overpass API",
-        "map_data": _map_data_note(from_cache),
+        "source": "OpenStreetMap data via Overpass or ohsome",
+        "map_data": _map_data_note(from_cache, lat, lon, radius),
     })
 
 
