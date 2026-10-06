@@ -445,7 +445,7 @@
             .leaflet-container {
                 font-family: "Archivo", system-ui, sans-serif;
             }
-            /* Mute the colorful standard map so the scanned circle stands out. */
+            /* Mute the colorful standard map so the scanned area stands out. */
             .leaflet-tile-pane {
                 filter: grayscale(0.7) brightness(1.04) contrast(0.92);
             }
@@ -640,8 +640,8 @@
                     places.push(p);
                     return p;
                 }
-                p.circle = L.circle([p.lat, p.lon], {
-                    radius: p.radius,
+                // The tools count everything inside a square, so draw that square.
+                p.area = L.rectangle(squareBounds(p.lat, p.lon, p.radius), {
                     color: "#17324d",
                     weight: 1.5,
                     dashArray: "6 5",
@@ -667,15 +667,25 @@
                 return p;
             }
 
+            // Same square as _square() in tools.py: `radius` metres from the centre to each edge.
+            function squareBounds(lat, lon, radius) {
+                const dLat = radius / 111320;
+                const dLon = radius / (111320 * Math.max(Math.cos((lat * Math.PI) / 180), 0.01));
+                return [
+                    [lat - dLat, lon - dLon],
+                    [lat + dLat, lon + dLon],
+                ];
+            }
+
             function setRadius(p, radius) {
                 if (!radius || radius === p.radius) return;
                 p.radius = radius;
-                if (p.circle) p.circle.setRadius(radius);
+                if (p.area) p.area.setBounds(squareBounds(p.lat, p.lon, radius));
             }
 
             function focusPlaces(list) {
                 if (!hasMap) return;
-                const group = L.featureGroup(list.map((p) => p.circle));
+                const group = L.featureGroup(list.map((p) => p.area));
                 const bounds = group.getBounds().pad(0.25);
                 if (reduceMotion) map.fitBounds(bounds);
                 else map.flyToBounds(bounds, { duration: 1.2 });
@@ -689,8 +699,8 @@
                 document.getElementById("reading").hidden = false;
                 document.getElementById("r-name").textContent = p.name;
                 document.getElementById("r-where").textContent =
-                    `Within ${(p.radius / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} km of ` +
-                    `${p.lat.toFixed(3)}, ${p.lon.toFixed(3)}`;
+                    `Area scanned: a ${((2 * p.radius) / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} km square ` +
+                    `around ${p.lat.toFixed(3)}, ${p.lon.toFixed(3)}`;
 
                 const scale = document.getElementById("r-scale");
                 if (p.formality) {

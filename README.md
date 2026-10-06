@@ -51,7 +51,7 @@ trusted.
 1. Open the live app.
 2. Click one of the three example questions, or type any place, ideally with its city and country.
 3. Read the result:
-   - **The map** zooms to the place and draws the circle that was scanned.
+   - **The map** zooms to the place and draws the square area that was scanned.
    - **The reading panel** shows a score from 0 to 100, where 0 is fully formal and 100 is fully informal, how well the area is
      mapped, and key counts such as markets, kiosks and banks.
    - **The answer** in the chat gives a one-line verdict, the evidence and a confidence note.
@@ -77,7 +77,7 @@ trusted.
 | Tool | What it does | Data source |
 |---|---|---|
 | `locate_place` | Finds any place and returns its coordinates, country code and a scan radius sized to the place | OpenStreetMap Nominatim, with Open-Meteo as a fallback |
-| `scan_economic_footprint` | Counts what is mapped within the radius: **formal** signals (banks, ATMs, offices, supermarkets, chain brands), **informal** signals (open markets, kiosks, small general stores, artisan workshops, mobile-money agents) and public services (clinics, schools), with densities per km² | OpenStreetMap Overpass API |
+| `scan_economic_footprint` | Counts what is mapped within the scanned area: **formal** signals (banks, ATMs, offices, supermarkets, chain brands), **informal** signals (open markets, kiosks, small general stores, artisan workshops, mobile-money agents) and public services (clinics, schools), with densities per km² | OpenStreetMap Overpass API |
 | `estimate_formality` | Scores the area from 0 (formal) to 100 (informal), lists the top drivers of the score, and blends the local result with the national rate of vulnerable employment | Overpass + World Bank |
 | `check_map_coverage` | Grades how completely the area is mapped (well mapped, partially mapped, data desert) and flags areas where buildings are traced but businesses are missing | Overpass |
 | `get_country_context` | National benchmarks: GDP per capita, vulnerable employment, self-employment and urbanization, each with its year, plus a warning if the data is old | World Bank API |

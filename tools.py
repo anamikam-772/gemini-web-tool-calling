@@ -20,6 +20,8 @@ import time
 from datetime import date
 
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout
 
 USER_AGENT = "GroundTruth/1.0 (+https://github.com/anamikam-772/gemini-web-tool-calling)"
 HEADERS = {"User-Agent": USER_AGENT}
@@ -32,8 +34,8 @@ OVERPASS_URLS = [
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
 ]
-OVERPASS_TIMEOUT_S = 25  # how long to wait for one server
-OVERPASS_BUDGET_S = 45  # total time to spend across all servers before giving up
+OVERPASS_TIMEOUT_S = 30  # how long to wait for each server (all are asked at the same time)
+OVERPASS_BUDGET_S = 35  # total time to wait for the first good answer
 FAILURE_MEMORY_S = 120  # remember a failed scan briefly, so the next tools fail fast instead of waiting again
 WORLD_BANK_URL = "https://api.worldbank.org/v2/country/{code}/indicator/{indicator}"
 
@@ -104,7 +106,7 @@ def _clamp_radius(radius_m) -> int:
 
 def _map_data_note(from_cache: bool) -> str:
     if from_cache:
-        return "reused the map counts already fetched for this circle (cached), no new request"
+        return "reused the map counts already fetched for this area (cached), no new request"
     return "fetched live from OpenStreetMap"
 
 
@@ -186,8 +188,40 @@ def locate_place(place: str) -> str:
 # --- Tool 2: scan_economic_footprint ---
 
 
+def _square(lat: float, lon: float, radius: int) -> tuple[float, float, float, float]:
+    """South, west, north, east edges of a square centred on the point, `radius` metres from centre to each edge."""
+    dlat = radius / 111_320
+    dlon = radius / (111_320 * max(math.cos(math.radians(lat)), 0.01))
+    return lat - dlat, lon - dlon, lat + dlat, lon + dlon
+
+
+def _square_area_km2(radius: int) -> float:
+    return (2 * radius / 1000) ** 2
+
+
+def _ask_overpass(url: str, query: str) -> dict:
+    """Send the query to one Overpass server. Returns the counts or raises RuntimeError with a short reason."""
+    try:
+        resp = requests.post(url, data={"data": query}, headers=HEADERS, timeout=OVERPASS_TIMEOUT_S)
+    except requests.RequestException as e:
+        raise RuntimeError(type(e).__name__)
+    if resp.status_code != 200:
+        raise RuntimeError(f"HTTP {resp.status_code}")
+    try:
+        elements = resp.json().get("elements", [])
+    except ValueError:
+        raise RuntimeError("unreadable response")
+    if len(elements) != len(SIGNALS):
+        raise RuntimeError("incomplete response")
+    return {name: int(el.get("tags", {}).get("total", 0)) for (name, _, _, _), el in zip(SIGNALS, elements)}
+
+
 def _overpass_counts(lat: float, lon: float, radius: int) -> tuple[dict, bool]:
-    """Count every signal around a point in one Overpass request.
+    """Count every signal inside a square around a point, in one Overpass request.
+
+    A bounding-box search uses the map's spatial index directly, which is much faster than a circular
+    "around" search, so busy public servers answer in time more often. The same query goes to every
+    server at once and the first good answer wins.
 
     Returns (counts, from_cache). Raises RuntimeError with advice the model can act on.
     """
@@ -199,44 +233,33 @@ def _overpass_counts(lat: float, lon: float, radius: int) -> tuple[dict, bool]:
     if failed and time.time() - failed[0] < FAILURE_MEMORY_S:
         raise RuntimeError(failed[1])
 
-    around = f"(around:{radius},{lat},{lon})"
-    query = f"[out:json][timeout:{OVERPASS_TIMEOUT_S}];" + "".join(
-        f"{flt}{around};out count;" for _, flt, _, _ in SIGNALS
+    south, west, north, east = _square(lat, lon, radius)
+    query = (
+        f"[out:json][timeout:{OVERPASS_TIMEOUT_S}][bbox:{south:.6f},{west:.6f},{north:.6f},{east:.6f}];"
+        + "".join(f"{flt};out count;" for _, flt, _, _ in SIGNALS)
     )
 
-    started = time.time()
-    last_problem = "no response"
-    for url in OVERPASS_URLS:
-        remaining = OVERPASS_BUDGET_S - (time.time() - started)
-        if remaining < 5:
-            last_problem = "too slow"
-            break
-        try:
-            resp = requests.post(
-                url, data={"data": query}, headers=HEADERS, timeout=min(OVERPASS_TIMEOUT_S, remaining)
-            )
-        except requests.RequestException as e:
-            last_problem = f"{type(e).__name__}"
-            continue
-        if resp.status_code != 200:
-            last_problem = f"HTTP {resp.status_code}"
-            continue
-        try:
-            elements = resp.json().get("elements", [])
-        except ValueError:
-            last_problem = "unreadable response"
-            continue
-        if len(elements) != len(SIGNALS):
-            last_problem = "incomplete response"
-            continue
-        counts = {name: int(el.get("tags", {}).get("total", 0)) for (name, _, _, _), el in zip(SIGNALS, elements)}
-        _scan_cache[key] = (time.time(), counts)
-        return counts, False
+    problems = []
+    pool = ThreadPoolExecutor(max_workers=len(OVERPASS_URLS))
+    futures = [pool.submit(_ask_overpass, url, query) for url in OVERPASS_URLS]
+    try:
+        for future in as_completed(futures, timeout=OVERPASS_BUDGET_S):
+            try:
+                counts = future.result()
+            except RuntimeError as e:
+                problems.append(str(e))
+                continue
+            _scan_cache[key] = (time.time(), counts)
+            return counts, False
+    except FuturesTimeout:
+        problems.append("too slow")
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
     message = (
-        f"The public OpenStreetMap servers did not answer in time ({last_problem}). They are shared and "
-        f"sometimes busy. Do not retry right away: tell the user to try again in a minute or two, or to ask "
-        f"about a smaller area (radius_m {max(MIN_RADIUS_M, radius // 2)})."
+        f"The public OpenStreetMap servers did not answer in time ({', '.join(problems) or 'no response'}). "
+        f"They are shared and sometimes busy. Do not retry right away: tell the user to try again in a minute "
+        f"or two, or to ask about a smaller area (radius_m {max(MIN_RADIUS_M, radius // 2)})."
     )
     _scan_failures[key] = (time.time(), message)
     raise RuntimeError(message)
@@ -252,7 +275,7 @@ def scan_economic_footprint(lat: float, lon: float, radius_m: int = DEFAULT_RADI
     except RuntimeError as e:
         return _error(str(e))
 
-    area_km2 = math.pi * (radius / 1000) ** 2
+    area_km2 = _square_area_km2(radius)
     groups: dict[str, dict] = {"formal": {}, "informal": {}, "services": {}}
     for name, _, label, group in SIGNALS:
         if group in groups:
@@ -404,7 +427,7 @@ def check_map_coverage(lat: float, lon: float, radius_m: int = DEFAULT_RADIUS_M)
     except RuntimeError as e:
         return _error(str(e))
 
-    area = math.pi * (radius / 1000) ** 2
+    area = _square_area_km2(radius)
     building_density = c["buildings"] / area
     road_density = c["roads"] / area
     poi_density = (c["shops"] + c["amenities"]) / area
@@ -566,8 +589,8 @@ _COORD_PARAMS = {
     "radius_m": {
         "type": "integer",
         "description": (
-            f"Search radius in meters ({MIN_RADIUS_M}-{MAX_RADIUS_M}). Use suggested_radius_m from "
-            "locate_place. Use the same radius across tools when describing one place."
+            f"Size of the area to scan, in meters from the centre to each edge of a square ({MIN_RADIUS_M}-{MAX_RADIUS_M}). "
+            "Use suggested_radius_m from locate_place, and the same value across tools for one place."
         ),
     },
 }
