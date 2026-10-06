@@ -67,6 +67,7 @@ FORMALITY_WEIGHTS = {
     "marketplaces": 15, "kiosks": 1, "general_stores": 1, "artisans": 1, "money_transfer": 2,
 }
 MIN_EVIDENCE = 8  # below this much weighted evidence, a score would be noise
+UNDERCOUNT_GAP = 20  # map score this many points below the national rate triggers an undercount check
 
 _scan_cache: dict[tuple, tuple[float, dict]] = {}
 _country_cache: dict[str, tuple[float, dict]] = {}
@@ -329,6 +330,18 @@ def estimate_formality(lat: float, lon: float, radius_m: int = DEFAULT_RADIUS_M,
                 "blended_band": _band(blended),
                 "local_weight": w_local,
             })
+            # Catch the classic mapping gap: markets and banks get mapped, but the kiosks, vendors and
+            # mobile-money agents around them rarely do. If the map looks far more formal than the
+            # country, and small informal businesses are almost absent, the score is probably too low.
+            small_informal = sum(counts[k] for k in ("kiosks", "general_stores", "artisans", "money_transfer"))
+            gap = national["value"] - local_score
+            if gap >= UNDERCOUNT_GAP and small_informal <= max(3, 0.05 * counts["shops"]):
+                result["undercount_warning"] = (
+                    f"The map score ({local_score}) is {round(gap)} points below the national vulnerable-employment "
+                    f"rate ({national['value']}%), and only {small_informal} small informal businesses (kiosks, "
+                    "general stores, workshops, mobile-money agents) are mapped here. Informal activity is "
+                    "probably under-mapped, so the real informality is likely higher than this score."
+                )
         else:
             result["national_benchmark"] = f"No World Bank vulnerable-employment figure found for '{country_code}'."
 

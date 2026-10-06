@@ -248,6 +248,14 @@
             .dot.low {
                 background: var(--alert);
             }
+            .warning {
+                margin-top: 0.5rem;
+                padding: 0.45rem 0.6rem;
+                border-left: 3px solid var(--informal);
+                background: #fbf3e4;
+                font-size: 0.85rem;
+                line-height: 1.35;
+            }
             .counts {
                 display: grid;
                 grid-template-columns: repeat(4, 1fr);
@@ -466,6 +474,10 @@
             .leaflet-container {
                 font-family: "Archivo", system-ui, sans-serif;
             }
+            /* Mute the colorful standard map so the scanned circle stands out. */
+            .leaflet-tile-pane {
+                filter: grayscale(0.7) brightness(1.04) contrast(0.92);
+            }
             .place-label {
                 background: var(--ink);
                 color: #fff;
@@ -548,6 +560,7 @@
                         <p class="verdict" id="r-verdict"></p>
                     </div>
                     <p class="coverage" id="r-coverage" hidden></p>
+                    <p class="warning" id="r-warning" hidden></p>
                     <div class="counts" id="r-counts" hidden></div>
                     <p class="pending" id="r-pending" hidden></p>
                 </aside>
@@ -600,11 +613,11 @@
             // If the map library cannot load, the chat still works without the map.
             const hasMap = typeof L !== "undefined";
             const map = hasMap ? L.map("map", { zoomControl: true, worldCopyJump: true }).setView([15, 10], 2) : null;
-            if (hasMap) L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+            // OpenStreetMap's own tiles: free, no API key, attribution required.
+            if (hasMap) L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
                 maxZoom: 19,
-                subdomains: "abcd",
                 attribution:
-                    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+                    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
             }).addTo(map);
             const placeLayer = hasMap ? L.layerGroup().addTo(map) : null;
 
@@ -743,6 +756,10 @@
                 } else {
                     cov.hidden = true;
                 }
+
+                const warn = document.getElementById("r-warning");
+                warn.hidden = !(p.formality && p.formality.undercount_warning);
+                warn.textContent = "Informal businesses look under-mapped here, so the real score is probably higher.";
 
                 const counts = document.getElementById("r-counts");
                 if (p.scan) {

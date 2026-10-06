@@ -101,6 +101,10 @@ sources are free and need no API key.
    used in small-area estimation.
 5. **Refuse when there is too little.** Below 8 points of evidence, the tool returns no score and
    tells the agent to check coverage instead.
+6. **Flag likely undercounts.** Markets and banks usually get mapped, but the kiosks, vendors and
+   mobile-money agents around them often do not. When the map score is 20 or more points below the
+   national vulnerable-employment rate and small informal businesses are almost absent from the map,
+   the tool warns that the real informality is probably higher than the score.
 
 The weights are transparent judgment calls, not values fitted to data, and the tool prints its method
 alongside every score. A research version would calibrate them against survey estimates of
