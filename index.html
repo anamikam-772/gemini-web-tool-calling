@@ -334,6 +334,7 @@
                 border-color: var(--ink);
             }
             .msg {
+                flex-shrink: 0;
                 max-width: 92%;
                 font-size: 0.975rem;
             }
@@ -384,57 +385,27 @@
                 }
             }
 
-            /* Evidence trail: one row per tool call */
-            .trail {
+            /* Tool calls, in the starter's style */
+            .tool {
                 align-self: stretch;
-                border-left: 2px solid var(--rule);
-                padding-left: 0.85rem;
-                display: flex;
-                flex-direction: column;
-                gap: 0.2rem;
-            }
-            .trail details {
-                font-size: 0.85rem;
-                color: var(--muted);
-            }
-            .trail summary {
-                cursor: pointer;
-                list-style: none;
-                padding: 0.1rem 0;
-            }
-            .trail summary::-webkit-details-marker {
-                display: none;
-            }
-            .trail summary::before {
-                content: "+";
-                display: inline-block;
-                width: 1rem;
-                color: var(--ink);
-                font-weight: 700;
-            }
-            .trail details[open] summary::before {
-                content: "\2212";
-            }
-            .trail .tool-name {
-                color: var(--ink);
-                font-weight: 600;
-            }
-            .trail .failed .tool-name {
-                color: var(--alert);
-            }
-            .trail pre {
-                margin: 0.35rem 0 0.5rem 1rem;
-                padding: 0.6rem 0.75rem;
-                background: var(--paper);
-                border-radius: var(--radius-s);
                 font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
                 font-size: 0.75rem;
-                line-height: 1.45;
+                line-height: 1.5;
+                color: #4a5a62;
+                background: #f3f5f4;
+                border-left: 3px solid var(--informal);
+                padding: 0.5rem 0.75rem;
                 white-space: pre-wrap;
                 word-break: break-word;
-                max-height: 18rem;
+                max-height: 11rem;
                 overflow: auto;
-                color: var(--text);
+                flex-shrink: 0;
+            }
+            .tool .label {
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                color: #9a5f0c;
+                font-weight: 600;
             }
 
             /* Composer */
@@ -816,54 +787,20 @@
                 touched.add(p);
             }
 
-            // --- Evidence trail ---
-            function describe(call) {
-                let r = {};
-                try {
-                    r = JSON.parse(call.result);
-                } catch {}
-                if (r.error) return [`${call.name} could not finish`, true];
-                switch (call.name) {
-                    case "locate_place":
-                        return [`Located ${r.name}${r.country ? ", " + r.country : ""}`, false];
-                    case "scan_economic_footprint":
-                        return [`Counted mapped activity within ${fmt(r.radius_m)} m`, false];
-                    case "estimate_formality": {
-                        const s = r.blended_score ?? r.local_informality_score;
-                        return [`Scored informality at ${Math.round(s)} out of 100`, false];
-                    }
-                    case "check_map_coverage":
-                        return [`Checked the map: ${r.coverage_grade}`, false];
-                    case "get_country_context":
-                        return [`Pulled World Bank figures for ${r.country}`, false];
-                    default:
-                        return [call.name, false];
-                }
-            }
-
+            // --- Tool calls: shown like the starter, one block per call, in the order they ran ---
             function addTrail(calls, before) {
-                if (!calls.length) return;
-                const trail = document.createElement("div");
-                trail.className = "trail";
                 for (const call of calls) {
-                    const [text, failed] = describe(call);
-                    const det = document.createElement("details");
-                    if (failed) det.className = "failed";
-                    const sum = document.createElement("summary");
-                    const name = document.createElement("span");
-                    name.className = "tool-name";
-                    name.textContent = call.name;
-                    sum.append(name, `  ${text}`);
-                    const pre = document.createElement("pre");
-                    let pretty = call.result;
-                    try {
-                        pretty = JSON.stringify(JSON.parse(call.result), null, 2);
-                    } catch {}
-                    pre.textContent = `${call.name}(${JSON.stringify(call.args)})\n\n${pretty}`;
-                    det.append(sum, pre);
-                    trail.append(det);
+                    const div = document.createElement("div");
+                    div.className = "tool";
+                    const label = document.createElement("span");
+                    label.className = "label";
+                    label.textContent = "tool call  ";
+                    div.appendChild(label);
+                    div.appendChild(
+                        document.createTextNode(call.name + "(" + JSON.stringify(call.args) + ")\n\u2192 " + call.result),
+                    );
+                    messages.insertBefore(div, before);
                 }
-                messages.insertBefore(trail, before);
             }
 
             // --- Messages ---

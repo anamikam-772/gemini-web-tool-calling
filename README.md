@@ -85,6 +85,27 @@ trusted.
 Our two original tools, one per team member, are `estimate_formality` and `check_map_coverage`. All data
 sources are free and need no API key.
 
+### When each tool runs
+
+For every place, the agent works in three steps. Each step is one round of the agent loop.
+
+1. `locate_place` runs first, because every other tool needs the coordinates, country code and radius
+   it returns.
+2. Then four tools run together: `scan_economic_footprint`, `estimate_formality`,
+   `check_map_coverage` and `get_country_context`. The first of the three map tools to run fetches the
+   OpenStreetMap counts live, and the other two reuse those counts from a short-term cache instead of
+   asking the map server again. `get_country_context` fetches the national figures from the World Bank.
+3. Gemini reads all the results and writes the answer.
+
+For a comparison, both places are located in step 1 and all the remaining tools for both places run in
+step 2. Follow-up questions usually need no tools at all, because the earlier results are still in the
+conversation.
+
+In the app, every tool call is shown above the answer in the order it ran: the function name, the exact
+arguments Gemini passed, and the full result it got back. Each result includes a `source` field naming
+the service it used and, for the map tools, a `map_data` field saying whether the counts were fetched
+live or reused from the cache.
+
 ### How the informality score works (`estimate_formality`)
 
 1. **Count and weight.** Each mapped feature counts for a number of points. Most count 1, since one kiosk is

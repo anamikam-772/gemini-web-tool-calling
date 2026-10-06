@@ -102,6 +102,12 @@ def _clamp_radius(radius_m) -> int:
     return max(MIN_RADIUS_M, min(MAX_RADIUS_M, radius))
 
 
+def _map_data_note(from_cache: bool) -> str:
+    if from_cache:
+        return "reused the map counts already fetched for this circle (cached), no new request"
+    return "fetched live from OpenStreetMap"
+
+
 def _haversine_m(lat1, lon1, lat2, lon2) -> float:
     r = 6_371_000
     p1, p2 = math.radians(lat1), math.radians(lat2)
@@ -180,12 +186,15 @@ def locate_place(place: str) -> str:
 # --- Tool 2: scan_economic_footprint ---
 
 
-def _overpass_counts(lat: float, lon: float, radius: int) -> dict:
-    """Count every signal around a point in one Overpass request. Raises RuntimeError with advice."""
+def _overpass_counts(lat: float, lon: float, radius: int) -> tuple[dict, bool]:
+    """Count every signal around a point in one Overpass request.
+
+    Returns (counts, from_cache). Raises RuntimeError with advice the model can act on.
+    """
     key = (round(lat, 4), round(lon, 4), radius)
     cached = _scan_cache.get(key)
     if cached and time.time() - cached[0] < CACHE_SECONDS:
-        return cached[1]
+        return cached[1], True
     failed = _scan_failures.get(key)
     if failed and time.time() - failed[0] < FAILURE_MEMORY_S:
         raise RuntimeError(failed[1])
@@ -222,7 +231,7 @@ def _overpass_counts(lat: float, lon: float, radius: int) -> dict:
             continue
         counts = {name: int(el.get("tags", {}).get("total", 0)) for (name, _, _, _), el in zip(SIGNALS, elements)}
         _scan_cache[key] = (time.time(), counts)
-        return counts
+        return counts, False
 
     message = (
         f"The public OpenStreetMap servers did not answer in time ({last_problem}). They are shared and "
@@ -239,7 +248,7 @@ def scan_economic_footprint(lat: float, lon: float, radius_m: int = DEFAULT_RADI
         return _error(problem)
     lat, lon, radius = float(lat), float(lon), _clamp_radius(radius_m)
     try:
-        counts = _overpass_counts(lat, lon, radius)
+        counts, from_cache = _overpass_counts(lat, lon, radius)
     except RuntimeError as e:
         return _error(str(e))
 
@@ -260,6 +269,8 @@ def scan_economic_footprint(lat: float, lon: float, radius_m: int = DEFAULT_RADI
         "all_shops": counts["shops"],
         "all_amenities": counts["amenities"],
         "note": "Counts are what volunteers have mapped in OpenStreetMap, a proxy for activity, not a census.",
+        "source": "OpenStreetMap Overpass API",
+        "map_data": _map_data_note(from_cache),
     })
 
 
@@ -282,7 +293,7 @@ def estimate_formality(lat: float, lon: float, radius_m: int = DEFAULT_RADIUS_M,
         return _error(problem)
     lat, lon, radius = float(lat), float(lon), _clamp_radius(radius_m)
     try:
-        counts = _overpass_counts(lat, lon, radius)
+        counts, from_cache = _overpass_counts(lat, lon, radius)
     except RuntimeError as e:
         return _error(str(e))
 
@@ -324,6 +335,8 @@ def estimate_formality(lat: float, lon: float, radius_m: int = DEFAULT_RADIUS_M,
         "radius_m": radius,
         "local_informality_score": local_score,
         "local_band": _band(local_score),
+        "source": "OpenStreetMap Overpass API (map counts) + World Bank API (national rate)",
+        "map_data": _map_data_note(from_cache),
         "weighted_evidence": total,
         "top_drivers": drivers,
         "method": (
@@ -387,7 +400,7 @@ def check_map_coverage(lat: float, lon: float, radius_m: int = DEFAULT_RADIUS_M)
         return _error(problem)
     lat, lon, radius = float(lat), float(lon), _clamp_radius(radius_m)
     try:
-        c = _overpass_counts(lat, lon, radius)
+        c, from_cache = _overpass_counts(lat, lon, radius)
     except RuntimeError as e:
         return _error(str(e))
 
@@ -470,6 +483,8 @@ def check_map_coverage(lat: float, lon: float, radius_m: int = DEFAULT_RADIUS_M)
         },
         "findings": findings or ["No major gaps detected."],
         "advice": advice,
+        "source": "OpenStreetMap Overpass API",
+        "map_data": _map_data_note(from_cache),
     })
 
 
@@ -631,7 +646,8 @@ TOOLS = [
             "name": "get_country_context",
             "description": (
                 "Get national benchmarks from the World Bank for a country: GDP per capita, vulnerable employment %, "
-                "self-employment %, urban population %, each with its year, plus a warning if the data is stale."
+                "self-employment %, urban population %, each with its year, plus a warning if the data is stale. "
+                "Call it in every investigation, once per country, so local results can be read against the national picture."
             ),
             "parameters": {
                 "type": "object",
