@@ -26,11 +26,15 @@ HEADERS = {"User-Agent": USER_AGENT}
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 OPEN_METEO_GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
-# Public Overpass servers are shared and sometimes busy, so we try a mirror too.
+# Public Overpass servers are shared and sometimes busy, so we try mirrors too.
 OVERPASS_URLS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
 ]
+OVERPASS_TIMEOUT_S = 25  # how long to wait for one server
+OVERPASS_BUDGET_S = 45  # total time to spend across all servers before giving up
+FAILURE_MEMORY_S = 120  # remember a failed scan briefly, so the next tools fail fast instead of waiting again
 WORLD_BANK_URL = "https://api.worldbank.org/v2/country/{code}/indicator/{indicator}"
 
 MIN_RADIUS_M, MAX_RADIUS_M, DEFAULT_RADIUS_M = 200, 5000, 1500
@@ -70,6 +74,7 @@ MIN_EVIDENCE = 8  # below this much weighted evidence, a score would be noise
 UNDERCOUNT_GAP = 20  # map score this many points below the national rate triggers an undercount check
 
 _scan_cache: dict[tuple, tuple[float, dict]] = {}
+_scan_failures: dict[tuple, tuple[float, str]] = {}
 _country_cache: dict[str, tuple[float, dict]] = {}
 CACHE_SECONDS = 3600
 
@@ -181,14 +186,26 @@ def _overpass_counts(lat: float, lon: float, radius: int) -> dict:
     cached = _scan_cache.get(key)
     if cached and time.time() - cached[0] < CACHE_SECONDS:
         return cached[1]
+    failed = _scan_failures.get(key)
+    if failed and time.time() - failed[0] < FAILURE_MEMORY_S:
+        raise RuntimeError(failed[1])
 
     around = f"(around:{radius},{lat},{lon})"
-    query = "[out:json][timeout:50];" + "".join(f"{flt}{around};out count;" for _, flt, _, _ in SIGNALS)
+    query = f"[out:json][timeout:{OVERPASS_TIMEOUT_S}];" + "".join(
+        f"{flt}{around};out count;" for _, flt, _, _ in SIGNALS
+    )
 
+    started = time.time()
     last_problem = "no response"
     for url in OVERPASS_URLS:
+        remaining = OVERPASS_BUDGET_S - (time.time() - started)
+        if remaining < 5:
+            last_problem = "too slow"
+            break
         try:
-            resp = requests.post(url, data={"data": query}, headers=HEADERS, timeout=60)
+            resp = requests.post(
+                url, data={"data": query}, headers=HEADERS, timeout=min(OVERPASS_TIMEOUT_S, remaining)
+            )
         except requests.RequestException as e:
             last_problem = f"{type(e).__name__}"
             continue
@@ -207,10 +224,13 @@ def _overpass_counts(lat: float, lon: float, radius: int) -> dict:
         _scan_cache[key] = (time.time(), counts)
         return counts
 
-    raise RuntimeError(
-        f"The OpenStreetMap servers did not answer ({last_problem}). They are shared and "
-        f"sometimes busy: retry once, or use a smaller radius_m (e.g. {max(MIN_RADIUS_M, radius // 2)})."
+    message = (
+        f"The public OpenStreetMap servers did not answer in time ({last_problem}). They are shared and "
+        f"sometimes busy. Do not retry right away: tell the user to try again in a minute or two, or to ask "
+        f"about a smaller area (radius_m {max(MIN_RADIUS_M, radius // 2)})."
     )
+    _scan_failures[key] = (time.time(), message)
+    raise RuntimeError(message)
 
 
 def scan_economic_footprint(lat: float, lon: float, radius_m: int = DEFAULT_RADIUS_M) -> str:
@@ -479,7 +499,7 @@ def _country_indicators(country_code: str) -> dict:
                 WORLD_BANK_URL.format(code=code, indicator=indicator),
                 params={"format": "json", "mrnev": 1},
                 headers=HEADERS,
-                timeout=15,
+                timeout=10,
             )
             payload = resp.json()
         except (requests.RequestException, ValueError) as e:

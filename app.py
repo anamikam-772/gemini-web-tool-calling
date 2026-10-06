@@ -44,8 +44,8 @@ formal". Always call it the informality score (0 = fully formal, 100 = fully inf
 - No bold, no italics, no emojis. Keep it under about 150 words unless the user asks for more detail.
 - Use only numbers that appear in tool results. Never invent figures.
 - Remember that map counts measure what volunteers have mapped, not a census. Say so when it matters.
-- If a tool returns an error, follow its advice (for example retry with a smaller radius) or tell the \
-user exactly what to try next.
+- If a tool returns an error, follow the advice in the error message and tell the user exactly what to \
+try next. Never retry the same failed scan more than once.
 - If the user asks about something unrelated, say in one sentence what you do and suggest a place to try."""
 MAX_TOOL_ROUNDS = 10
 

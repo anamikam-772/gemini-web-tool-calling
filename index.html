@@ -932,11 +932,22 @@
                 addUser(text);
                 const pending = addThinking();
 
+                // Show how long we've been waiting, and give up after 3 minutes instead of spinning forever.
+                const started = Date.now();
+                const timer = setInterval(() => {
+                    const s = Math.round((Date.now() - started) / 1000);
+                    pending.textContent =
+                        s < 30 ? `Reading the map (${s} s)` : `Still reading the map. The public map servers are slow right now (${s} s)`;
+                }, 1000);
+                const controller = new AbortController();
+                const giveUp = setTimeout(() => controller.abort(), 180000);
+
                 try {
                     const res = await fetch("/chat", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ message: text, session_id: sessionId }),
+                        signal: controller.signal,
                     });
                     if (!res.ok) throw new Error(`The server answered ${res.status}. Reload the page and try again.`);
                     const data = await res.json();
@@ -956,8 +967,13 @@
                     pending.innerHTML = renderMarkdown(data.response);
                 } catch (e) {
                     pending.className = "msg assistant error";
-                    pending.textContent = e.message || "The request failed. Check your connection and try again.";
+                    pending.textContent =
+                        e.name === "AbortError"
+                            ? "This took more than 3 minutes, so I stopped waiting. The public map servers are probably busy. Try again in a minute, or ask about a smaller area."
+                            : e.message || "The request failed. Check your connection and try again.";
                 }
+                clearInterval(timer);
+                clearTimeout(giveUp);
                 sendBtn.disabled = false;
                 messages.scrollTop = messages.scrollHeight;
                 userInput.focus();
